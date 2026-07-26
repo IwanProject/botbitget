@@ -1,139 +1,92 @@
 import ccxt
 import pandas as pd
+import pandas_ta as ta
 import requests
 import os
 import time
-from datetime import datetime
-
-# Kredensial Telegram diambil dari GitHub Secrets untuk keamanan
-TELEGRAM_BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TG_CHAT_ID")
 
 def send_telegram_message(message):
-    """Mengirim pesan notifikasi ke Telegram."""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Telegram Token atau Chat ID belum disetting!")
+    """Mengirim pesan ke Telegram"""
+    token = os.getenv('TG_BOT_TOKEN')
+    chat_id = os.getenv('TG_CHAT_ID')
+    if not token or not chat_id:
+        print("Error: TG_BOT_TOKEN atau TG_CHAT_ID belum diatur!")
         return
-
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "parse_mode": "Markdown"
-    }
     
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    params = {'chat_id': chat_id, 'text': message, 'parse_mode': 'Markdown'}
     try:
-        response = requests.post(url, json=payload)
-        response.raise_for_status()
-        print("Notifikasi Telegram berhasil dikirim.")
+        requests.get(url, params=params, timeout=10)
     except Exception as e:
-        print(f"Gagal mengirim pesan Telegram: {e}")
+        print(f"Gagal kirim Telegram: {e}")
 
-def get_top_gainers_futures(exchange, limit=10):
-    """Mengambil Top Gainers dari pasar Futures (Swap) USDT di Bitget."""
+def get_bitget_exchange():
+    return ccxt.bitget({'enableRateLimit': True})
+
+def get_top_gainers(exchange):
+    """Mengambil 10 koin dengan kenaikan tertinggi"""
+    print("Mengambil data seluruh ticker dari Bitget Futures...")
     try:
-        print("Mengambil data seluruh ticker dari Bitget Futures...")
         tickers = exchange.fetch_tickers()
-        
-        # Filter hanya pair USDT-M Futures (biasanya berakhiran :USDT di CCXT Bitget)
-        usdt_futures = []
-        for symbol, ticker in tickers.items():
-            if symbol.endswith(':USDT') and ticker.get('percentage') is not None:
-                usdt_futures.append({
-                    'symbol': symbol,
-                    'last': ticker.get('last'),
-                    'percentage': ticker.get('percentage')
-                })
-        
-        # Urutkan berdasarkan persentase kenaikan 24h tertinggi
-        sorted_tickers = sorted(usdt_futures, key=lambda x: x['percentage'], reverse=True)
-        return sorted_tickers[:limit]
+        gainers = []
+        for symbol, data in tickers.items():
+            if symbol.endswith(':USDT') and data['percentage'] is not None:
+                gainers.append({'symbol': symbol, 'change': data['percentage']})
+        gainers.sort(key=lambda x: x['change'], reverse=True)
+        return gainers[:10]
     except Exception as e:
-        print(f"Error mengambil top gainers: {e}")
+        print(f"Gagal mengambil gainers: {e}")
         return []
 
-def calculate_stochastic(df, k_period=5, d_period=3, smooth_k=3):
-    """
-    Menghitung Stochastic Oscillator (5, 3, 3) secara manual menggunakan Pandas
-    untuk menghindari dependensi library yang berat di GitHub Actions.
-    """
-    # 1. Hitung titik terendah (Lowest Low) dan tertinggi (Highest High) dalam periode K
-    df['Low_5'] = df['low'].rolling(window=k_period).min()
-    df['High_5'] = df['high'].rolling(window=k_period).max()
-    
-    # 2. Hitung Fast %K
-    df['Fast_%K'] = 100 * ((df['close'] - df['Low_5']) / (df['High_5'] - df['Low_5']))
-    
-    # 3. Hitung Slow %K (Smooth K)
-    df['%K'] = df['Fast_%K'].rolling(window=smooth_k).mean()
-    
-    # 4. Hitung Slow %D (Smooth D)
-    df['%D'] = df['%K'].rolling(window=d_period).mean()
-    
-    return df
+def analyze_stochastic(exchange, symbol):
+    """Mengambil data OHLCV dan menghitung Stoch 5,3,3"""
+    try:
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe='1h', limit=50)
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        stoch = df.ta.stoch(fast_k=5, slow_k=3, slow_d=3)
+        k = stoch.iloc[-1]['STOCHk_5_3_3']
+        d = stoch.iloc[-1]['STOCHd_5_3_3']
+        return k, d
+    except Exception as e:
+        print(f"Error menganalisis {symbol}: {e}")
+        return None, None
 
-def run_screener():
-    print(f"Menjalankan screener pada: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+def main():
+    print("Memulai bot...")
+    exchange = get_bitget_exchange()
     
-    # Inisialisasi CCXT untuk Bitget Futures
-    exchange = ccxt.bitget({
-        'enableRateLimit': True,
-        'options': {'defaultType': 'swap'}
-    })
+    # Notifikasi Startup
+    startup_msg = "✅ *Bot Screener Bitget Aktif!*\n\nProgram telah berhasil dijalankan dan siap memantau 10 Top Gainers."
+    send_telegram_message(startup_msg)
     
-    top_10 = get_top_gainers_futures(exchange, limit=10)
+    gainers = get_top_gainers(exchange)
     
-    if not top_10:
-        print("Tidak ada data ticker ditemukan.")
-        return
-
-    print("\nTop 10 Gainers:")
-    for t in top_10:
-        print(f"{t['symbol']} - Naik: {t['percentage']}%")
-
-    alerts = []
-    
+    print(f"\nTop 10 Gainers Ditemukan:")
+    for g in gainers:
+        print(f"{g['symbol']}: {g['change']}%")
+        
     print("\nMenganalisis Timeframe 1 Jam (Stochastic 5,3,3)...")
-    for item in top_10:
-        symbol = item['symbol']
-        try:
-            # Ambil OHLCV 1 jam, ambil 30 candle terakhir (cukup untuk perhitungan)
-            ohlcv = exchange.fetch_ohlcv(symbol, timeframe='1h', limit=30)
-            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            
-            # Hitung Stochastic
-            df = calculate_stochastic(df, k_period=5, d_period=3, smooth_k=3)
-            
-            # AMBIL CANDLE YANG SUDAH CLOSE
-            # df.iloc[-1] adalah candle yang sedang berjalan (belum close)
-            # df.iloc[-2] adalah candle terakhir yang SUDAH close
-            last_closed_candle = df.iloc[-2]
-            
-            k_value = last_closed_candle['%K']
-            d_value = last_closed_candle['%D']
-            close_price = last_closed_candle['close']
-            
-            # Cek kondisi: %K berada di area oversold (<= 25)
-            if pd.notna(k_value) and k_value <= 25:
-                alerts.append(
-                    f"🔹 *{symbol.replace(':USDT', '')}*\n"
-                    f"Harga Close (1H): `${close_price}`\n"
-                    f"Kenaikan 24h: `+{item['percentage']}%`\n"
-                    f"Stoch(5,3,3) %K: `{k_value:.2f}` *(Oversold)*\n"
-                    f"Stoch(5,3,3) %D: `{d_value:.2f}`"
-                )
-                
-            time.sleep(1) # Jeda agar tidak terkena rate limit API
-            
-        except Exception as e:
-            print(f"Error menganalisis {symbol}: {e}")
-
-    if alerts:
-        message = "🚨 *SCREENER BITGET FUTURES* 🚨\n_Top Gainers di Area Oversold (TF 1H)_\n\n"
-        message += "\n\n".join(alerts)
-        send_telegram_message(message)
-    else:
-        print("Tidak ada koin Top Gainer yang sedang Oversold di TF 1 Jam saat ini.")
+    
+    for g in gainers:
+        symbol = g['symbol']
+        k, d = analyze_stochastic(exchange, symbol)
+        
+        if k is not None and d is not None:
+            # Kondisi: K dan D di bawah 25
+            if k < 25 and d < 25:
+                msg = (f"🚨 *Sinyal Oversold!* 🚨\n\n"
+                       f"Coin: {symbol}\n"
+                       f"Change: {g['change']}%\n"
+                       f"%K: {k:.2f}\n"
+                       f"%D: {d:.2f}\n"
+                       f"Status: Oversold (K & D < 25)")
+                print(f"Mengirim sinyal untuk {symbol}!")
+                send_telegram_message(msg)
+            else:
+                print(f"{symbol}: %K={k:.2f}, %D={d:.2f} (Belum Oversold)")
+        
+        # Jeda singkat agar tidak terkena rate limit API
+        time.sleep(0.5)
 
 if __name__ == "__main__":
-    run_screener()
+    main()
