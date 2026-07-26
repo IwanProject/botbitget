@@ -1,4 +1,4 @@
-name: Bitget Futures Screener (1H)
+name: Bitget Futures Screener (1H) 
 
 on:
   schedule:
