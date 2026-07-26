@@ -1,0 +1,3 @@
+ccxt4.2.14
+pandas2.1.4
+requests==2.31.0
