@@ -1,92 +1,140 @@
 import ccxt
 import pandas as pd
-import pandas_ta as ta
-import requests
-import os
 import time
+import schedule
+import requests
+import datetime
+import os
+import sys
 
-def send_telegram_message(message):
-    """Mengirim pesan ke Telegram"""
-    token = os.getenv('TG_BOT_TOKEN')
-    chat_id = os.getenv('TG_CHAT_ID')
-    if not token or not chat_id:
-        print("Error: TG_BOT_TOKEN atau TG_CHAT_ID belum diatur!")
-        return
+# ==========================================
+# KONFIGURASI TELEGRAM (DARI RAILWAY VARIABLES)
+# ==========================================
+BOT_TOKEN = os.getenv('BOT_TOKEN')
+CHAT_ID = os.getenv('CHAT_ID')
+
+if not BOT_TOKEN or not CHAT_ID:
+    print("ERROR: BOT_TOKEN atau CHAT_ID belum diatur di Environment Variables Railway!")
+    sys.exit(1)
+
+# ==========================================
+# KONFIGURASI SCREENER
+# ==========================================
+TIMEFRAME = '1h'          # Timeframe 1 jam
+LIMIT_GAINERS = 100       # Ambil 100 koin dengan persentase kenaikan 24h tertinggi
+CANDLE_LIMIT = 50         # Jumlah candle yang diambil untuk hitung EMA
+
+# Inisialisasi exchange Bitget menggunakan ccxt
+exchange = ccxt.bitget({
+    'enableRateLimit': True,
+    'options': {
+        'defaultType': 'swap', 
+    }
+})
+
+def get_top_100_gainers():
+    """Mengambil Top 100 Gainers (24h) dari Bitget Futures."""
+    tickers = exchange.fetch_tickers()
+    usdt_tickers = []
     
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    params = {'chat_id': chat_id, 'text': message, 'parse_mode': 'Markdown'}
-    try:
-        requests.get(url, params=params, timeout=10)
-    except Exception as e:
-        print(f"Gagal kirim Telegram: {e}")
+    for symbol, ticker in tickers.items():
+        if symbol.endswith(':USDT') and ticker.get('percentage') is not None:
+            usdt_tickers.append(ticker)
+            
+    usdt_tickers.sort(key=lambda x: x['percentage'], reverse=True)
+    top_coins = [t['symbol'] for t in usdt_tickers[:LIMIT_GAINERS]]
+    return top_coins
 
-def get_bitget_exchange():
-    return ccxt.bitget({'enableRateLimit': True})
-
-def get_top_gainers(exchange):
-    """Mengambil 10 koin dengan kenaikan tertinggi"""
-    print("Mengambil data seluruh ticker dari Bitget Futures...")
+def check_ema_crossover(symbol, timeframe):
+    """Mengecek crossing EMA 5 & 10 ke atas EMA 30."""
     try:
-        tickers = exchange.fetch_tickers()
-        gainers = []
-        for symbol, data in tickers.items():
-            if symbol.endswith(':USDT') and data['percentage'] is not None:
-                gainers.append({'symbol': symbol, 'change': data['percentage']})
-        gainers.sort(key=lambda x: x['change'], reverse=True)
-        return gainers[:10]
-    except Exception as e:
-        print(f"Gagal mengambil gainers: {e}")
-        return []
-
-def analyze_stochastic(exchange, symbol):
-    """Mengambil data OHLCV dan menghitung Stoch 5,3,3"""
-    try:
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe='1h', limit=50)
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=CANDLE_LIMIT)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        stoch = df.ta.stoch(fast_k=5, slow_k=3, slow_d=3)
-        k = stoch.iloc[-1]['STOCHk_5_3_3']
-        d = stoch.iloc[-1]['STOCHd_5_3_3']
-        return k, d
-    except Exception as e:
-        print(f"Error menganalisis {symbol}: {e}")
-        return None, None
+        
+        if len(df) < 35:
+            return False
 
-def main():
-    print("Memulai bot...")
-    exchange = get_bitget_exchange()
+        df['ema5'] = df['close'].ewm(span=5, adjust=False).mean()
+        df['ema10'] = df['close'].ewm(span=10, adjust=False).mean()
+        df['ema30'] = df['close'].ewm(span=30, adjust=False).mean()
+
+        prev_ema5 = df['ema5'].iloc[-2]
+        prev_ema10 = df['ema10'].iloc[-2]
+        prev_ema30 = df['ema30'].iloc[-2]
+
+        curr_ema5 = df['ema5'].iloc[-1]
+        curr_ema10 = df['ema10'].iloc[-1]
+        curr_ema30 = df['ema30'].iloc[-1]
+
+        current_above = (curr_ema5 > curr_ema30) and (curr_ema10 > curr_ema30)
+        previous_below = (prev_ema5 <= prev_ema30) or (prev_ema10 <= prev_ema30)
+
+        if current_above and previous_below:
+            return True
+            
+        return False
+    except Exception as e:
+        print(f"Error pada {symbol}: {e}")
+        return False
+
+def kirim_ke_telegram(pesan):
+    """Fungsi untuk mengirim pesan ke Telegram."""
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    try:
+        requests.post(url, json={"chat_id": CHAT_ID, "text": pesan, "parse_mode": "HTML"})
+    except Exception as e:
+        print(f"Gagal kirim ke Telegram: {e}")
+
+def jalankan_screener():
+    """Fungsi utama yang akan dijalankan setiap jam."""
+    waktu = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"\n[{waktu}] Memulai proses screening...")
     
-    # Notifikasi Startup
-    startup_msg = "✅ *Bot Screener Bitget Aktif!*\n\nProgram telah berhasil dijalankan dan siap memantau 10 Top Gainers."
-    send_telegram_message(startup_msg)
-    
-    gainers = get_top_gainers(exchange)
-    
-    print(f"\nTop 10 Gainers Ditemukan:")
-    for g in gainers:
-        print(f"{g['symbol']}: {g['change']}%")
+    try:
+        top_gainers = get_top_100_gainers()
+        matched_coins = []
         
-    print("\nMenganalisis Timeframe 1 Jam (Stochastic 5,3,3)...")
-    
-    for g in gainers:
-        symbol = g['symbol']
-        k, d = analyze_stochastic(exchange, symbol)
+        for symbol in top_gainers:
+            if check_ema_crossover(symbol, TIMEFRAME):
+                matched_coins.append(symbol)
+            time.sleep(0.1) # Jeda agar tidak kena limit API
+            
+        # Susun pesan untuk Telegram
+        pesan = f"📊 <b>BITGET SCREENER (1H)</b>\n"
+        pesan += f"⏰ Waktu: {waktu}\n"
+        pesan += f"🔍 Kriteria: EMA 5 & 10 Cross EMA 30\n\n"
         
-        if k is not None and d is not None:
-            # Kondisi: K dan D di bawah 25
-            if k < 25 and d < 25:
-                msg = (f"🚨 *Sinyal Oversold!* 🚨\n\n"
-                       f"Coin: {symbol}\n"
-                       f"Change: {g['change']}%\n"
-                       f"%K: {k:.2f}\n"
-                       f"%D: {d:.2f}\n"
-                       f"Status: Oversold (K & D < 25)")
-                print(f"Mengirim sinyal untuk {symbol}!")
-                send_telegram_message(msg)
-            else:
-                print(f"{symbol}: %K={k:.2f}, %D={d:.2f} (Belum Oversold)")
+        if matched_coins:
+            pesan += f"✅ <b>Ditemukan {len(matched_coins)} Koin Sinyal:</b>\n"
+            for coin in matched_coins:
+                # Menghapus ':USDT' agar nama koin lebih bersih saat dibaca (opsional)
+                clean_name = coin.replace(':USDT', '') 
+                pesan += f"🚀 <code>{clean_name}</code>\n"
+        else:
+            pesan += "<i>result not found</i>"
+            
+        kirim_ke_telegram(pesan)
+        print(f"[{waktu}] Screening selesai. Hasil telah dikirim ke Telegram.")
         
-        # Jeda singkat agar tidak terkena rate limit API
-        time.sleep(0.5)
+    except Exception as e:
+        pesan_error = f"⚠️ <b>ERROR SCREENER:</b>\n<code>{e}</code>"
+        kirim_ke_telegram(pesan_error)
+        print(f"Error saat screening: {e}")
+
+# ==========================================
+# PENGATURAN JADWAL
+# ==========================================
+# Jalankan tepat pada pergantian jam (menit ke-00)
+schedule.every().hour.at(":00").do(jalankan_screener)
 
 if __name__ == "__main__":
-    main()
+    print("🚀 Screener Bot menyala di Railway!")
+    kirim_ke_telegram("✅ <b>Bot Screener Bitget</b> berhasil di-deploy dan menyala di Railway! Bersiap mengirim sinyal setiap jam...")
+    
+    # Langsung jalankan sekali saat baru dinyalakan tanpa menunggu jam berubah (Opsional)
+    # Hapus tanda pagar di bawah ini jika Anda ingin bot langsung scan saat baru di-deploy
+    # jalankan_screener()
+    
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
