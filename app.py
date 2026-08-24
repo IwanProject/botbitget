@@ -20,7 +20,7 @@ if not BOT_TOKEN or not CHAT_ID:
 # ==========================================
 # KONFIGURASI SCREENER
 # ==========================================
-TIMEFRAME = '1h'          # Timeframe 1 jam
+TIMEFRAME = '4h'          # Timeframe 4 jam
 LIMIT_GAINERS = 100       # Ambil 100 koin dengan persentase kenaikan 24h tertinggi
 CANDLE_LIMIT = 50         # Jumlah candle yang diambil untuk hitung EMA
 
@@ -86,7 +86,7 @@ def kirim_ke_telegram(pesan):
         print(f"Gagal kirim ke Telegram: {e}")
 
 def jalankan_screener():
-    """Fungsi utama yang akan dijalankan setiap jam."""
+    """Fungsi utama yang akan dijalankan setiap 4 jam."""
     waktu = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"\n[{waktu}] Memulai proses screening...")
     
@@ -100,7 +100,7 @@ def jalankan_screener():
             time.sleep(0.1) # Jeda agar tidak kena limit API
             
         # Susun pesan untuk Telegram
-        pesan = f"📊 <b>BITGET SCREENER (1H)</b>\n"
+        pesan = f"📊 <b>BITGET SCREENER (4H)</b>\n"
         pesan += f"⏰ Waktu: {waktu}\n"
         pesan += f"🔍 Kriteria: EMA 5 & 10 Cross EMA 30\n\n"
         
