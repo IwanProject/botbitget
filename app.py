@@ -20,7 +20,7 @@ if not BOT_TOKEN or not CHAT_ID:
 # ==========================================
 # KONFIGURASI SCREENER
 # ==========================================
-TIMEFRAME = '4h'          # Timeframe 4 jam
+TIMEFRAME = '4h'          # Timeframe, contoh: '4h' untuk 4 jam, '30m' untuk 30 menit
 LIMIT_GAINERS = 100       # Ambil 100 koin dengan persentase kenaikan 24h tertinggi
 CANDLE_LIMIT = 50         # Jumlah candle yang diambil untuk hitung EMA
 
@@ -31,6 +31,44 @@ exchange = ccxt.bitget({
         'defaultType': 'swap', 
     }
 })
+
+
+def parse_timeframe_to_seconds(tf):
+    """Konversi timeframe string seperti '4h' atau '30m' menjadi detik."""
+    tf = tf.strip().lower()
+    try:
+        if tf.endswith('m'):
+            minutes = int(tf[:-1])
+            return minutes * 60
+        if tf.endswith('h'):
+            hours = int(tf[:-1])
+            return hours * 3600
+        if tf.endswith('d'):
+            days = int(tf[:-1])
+            return days * 86400
+        # fallback treat as minutes
+        return int(tf) * 60
+    except Exception:
+        # default 4 hours
+        return 4 * 3600
+
+
+def human_readable_interval(tf):
+    tf = tf.strip().lower()
+    if tf.endswith('h'):
+        try:
+            h = int(tf[:-1])
+            return f"{h} jam"
+        except:
+            return tf
+    if tf.endswith('m'):
+        try:
+            m = int(tf[:-1])
+            return f"{m} menit"
+        except:
+            return tf
+    return tf
+
 
 def get_top_100_gainers():
     """Mengambil Top 100 Gainers (24h) dari Bitget Futures."""
@@ -44,6 +82,7 @@ def get_top_100_gainers():
     usdt_tickers.sort(key=lambda x: x['percentage'], reverse=True)
     top_coins = [t['symbol'] for t in usdt_tickers[:LIMIT_GAINERS]]
     return top_coins
+
 
 def check_ema_crossover(symbol, timeframe):
     """Mengecek crossing EMA 5 & 10 ke atas EMA 30."""
@@ -77,6 +116,7 @@ def check_ema_crossover(symbol, timeframe):
         print(f"Error pada {symbol}: {e}")
         return False
 
+
 def kirim_ke_telegram(pesan):
     """Fungsi untuk mengirim pesan ke Telegram."""
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -85,8 +125,9 @@ def kirim_ke_telegram(pesan):
     except Exception as e:
         print(f"Gagal kirim ke Telegram: {e}")
 
+
 def jalankan_screener():
-    """Fungsi utama yang akan dijalankan setiap 4 jam."""
+    """Fungsi utama yang akan dijalankan setiap interval sesuai TIMEFRAME."""
     waktu = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"\n[{waktu}] Memulai proses screening...")
     
@@ -100,7 +141,7 @@ def jalankan_screener():
             time.sleep(0.1) # Jeda agar tidak kena limit API
             
         # Susun pesan untuk Telegram
-        pesan = f"📊 <b>BITGET SCREENER (4H)</b>\n"
+        pesan = f"📊 <b>BITGET SCREENER ({TIMEFRAME.upper()})</b>\n"
         pesan += f"⏰ Waktu: {waktu}\n"
         pesan += f"🔍 Kriteria: EMA 5 & 10 Cross EMA 30\n\n"
         
@@ -124,14 +165,29 @@ def jalankan_screener():
 # ==========================================
 # PENGATURAN JADWAL
 # ==========================================
-# Jalankan tepat pada pergantian jam (menit ke-00)
-schedule.every().hour.at(":00").do(jalankan_screener)
+# Jadwalkan sesuai TIMEFRAME (mis. '4h' -> setiap 4 jam)
+interval_seconds = parse_timeframe_to_seconds(TIMEFRAME)
+
+if interval_seconds % 3600 == 0:
+    hours = interval_seconds // 3600
+    if hours == 1:
+        schedule.every().hour.at(":00").do(jalankan_screener)
+    else:
+        schedule.every(hours).hours.do(jalankan_screener)
+else:
+    minutes = interval_seconds // 60
+    if minutes >= 1:
+        schedule.every(minutes).minutes.do(jalankan_screener)
+    else:
+        # fallback: run every hour
+        schedule.every().hour.at(":00").do(jalankan_screener)
 
 if __name__ == "__main__":
     print("🚀 Screener Bot menyala di Railway!")
-    kirim_ke_telegram("✅ <b>Bot Screener Bitget</b> berhasil di-deploy dan menyala di Railway! Bersiap mengirim sinyal setiap jam...")
+    interval_text = human_readable_interval(TIMEFRAME)
+    kirim_ke_telegram(f"✅ <b>Bot Screener Bitget</b> berhasil di-deploy dan menyala di Railway! Bersiap mengirim sinyal setiap {interval_text}...")
     
-    # Langsung jalankan sekali saat baru dinyalakan tanpa menunggu jam berubah (Opsional)
+    # Langsung jalankan sekali saat baru dinyalakan tanpa menunggu jadwal (Opsional)
     # Hapus tanda pagar di bawah ini jika Anda ingin bot langsung scan saat baru di-deploy
     # jalankan_screener()
     
