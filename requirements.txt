@@ -1,5 +1,4 @@
-ccxt>=4.2.14
-pandas==3.0.5
-pandas_ta
+ccxt
+pandas
 requests
-schedule==1.2.1
+rich
